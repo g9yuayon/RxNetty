@@ -141,7 +141,13 @@ public interface RxClient<I, O> {
                 return false;
             return true;
         }
-        
-        
+
+        @Override
+        public String toString() {
+            return "ServerInfo{" +
+                "host='" + host + '\'' +
+                ", port=" + port +
+                '}';
+        }
     }
 }
