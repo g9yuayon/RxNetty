@@ -23,7 +23,7 @@ import io.reactivex.netty.channel.ConnectionHandler;
  *
  * @author Nitesh Kant
  */
-public class ServerBuilder<I, O> extends AbstractServerBuilder<I,O, ServerBuilder<I, O>, RxServer<I, O>> {
+public class ServerBuilder<I, O> extends ConnectionBasedServerBuilder<I,O, ServerBuilder<I, O>> {
 
     public ServerBuilder(int port, ConnectionHandler<I, O> connectionHandler) {
         super(port, connectionHandler);
@@ -35,10 +35,6 @@ public class ServerBuilder<I, O> extends AbstractServerBuilder<I,O, ServerBuilde
 
     @Override
     protected RxServer<I, O> createServer() {
-        if (null != pipelineConfigurator) {
-            return new RxServer<I, O>(serverBootstrap, port, pipelineConfigurator, connectionHandler);
-        } else {
-            return new RxServer<I, O>(serverBootstrap, port, connectionHandler);
-        }
+        return new RxServer<I, O>(serverBootstrap, port, pipelineConfigurator, connectionHandler);
     }
 }

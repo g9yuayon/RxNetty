@@ -1,10 +1,27 @@
+/*
+ * Copyright 2014 Netflix, Inc.
+ *
+ * Licensed under the Apache License, Version 2.0 (the "License");
+ * you may not use this file except in compliance with the License.
+ * You may obtain a copy of the License at
+ *
+ *     http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing, software
+ * distributed under the License is distributed on an "AS IS" BASIS,
+ * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+ * See the License for the specific language governing permissions and
+ * limitations under the License.
+ */
 package io.reactivex.netty.protocol.http.server;
 
-import static org.junit.Assert.*;
 import io.netty.buffer.ByteBuf;
+import io.netty.channel.ChannelPipeline;
+import io.reactivex.netty.ChannelCloseListener;
 import io.reactivex.netty.RxNetty;
 import io.reactivex.netty.channel.ConnectionHandler;
 import io.reactivex.netty.channel.ObservableConnection;
+import io.reactivex.netty.pipeline.PipelineConfigurator;
 import io.reactivex.netty.server.ErrorHandler;
 import io.reactivex.netty.server.RxServer;
 import org.junit.After;
@@ -14,28 +31,41 @@ import rx.Observable;
 import rx.functions.Func1;
 
 import java.util.concurrent.ExecutionException;
+import java.util.concurrent.TimeUnit;
+
+import static org.junit.Assert.assertTrue;
 
 /**
  * @author Nitesh Kant
  */
 public class UnexpectedErrorsTest {
 
-    public static final int PORT = 1999;
+    public int port;
     private RxServer<ByteBuf,ByteBuf> server;
+    private final ChannelCloseListener channelCloseListener = new ChannelCloseListener();
 
     @Before
     public void setUp() throws Exception {
-        server = RxNetty.createTcpServer(PORT, new ConnectionHandler<ByteBuf, ByteBuf>() {
-            @Override
-            public Observable<Void> handle(ObservableConnection<ByteBuf, ByteBuf> newConnection) {
-                return Observable.error(new IllegalStateException("I always throw an error."));
-            }
-        });
+        server = RxNetty.createTcpServer(0, new PipelineConfigurator<ByteBuf, ByteBuf>() {
+                                             @Override
+                                             public void configureNewPipeline(ChannelPipeline pipeline) {
+                                                 pipeline.addLast(channelCloseListener);
+                                             }
+                                         },
+                                         new ConnectionHandler<ByteBuf, ByteBuf>() {
+                                             @Override
+                                             public Observable<Void> handle(
+                                                     ObservableConnection<ByteBuf, ByteBuf> newConnection) {
+                                                 return Observable.error(new IllegalStateException(
+                                                         "I always throw an error."));
+                                             }
+                                         });
     }
 
     @After
     public void tearDown() throws Exception {
         server.shutdown();
+        server.waitTillShutdown();
     }
 
     @Test
@@ -43,9 +73,8 @@ public class UnexpectedErrorsTest {
         TestableErrorHandler errorHandler = new TestableErrorHandler(null);
         server.withErrorHandler(errorHandler).start();
 
-        blockTillConnected();
-
-        Thread.sleep(1000); // Sucks but we want to wait for the server connection handling to finish
+        blockTillConnected(server.getServerPort());
+        channelCloseListener.waitForClose(1, TimeUnit.MINUTES);
 
         assertTrue("Error handler not invoked.", errorHandler.invoked);
     }
@@ -57,15 +86,15 @@ public class UnexpectedErrorsTest {
 
         server.withErrorHandler(errorHandler).start();
 
-        blockTillConnected();
+        blockTillConnected(server.getServerPort());
 
-        Thread.sleep(1000); // Sucks but we want to wait for the server connection handling to finish
+        channelCloseListener.waitForClose(1, TimeUnit.MINUTES);
 
         assertTrue("Error handler not invoked.", errorHandler.invoked);
     }
 
-    private static void blockTillConnected() throws InterruptedException, ExecutionException {
-        RxNetty.createTcpClient("localhost", PORT).connect().flatMap(
+    private static void blockTillConnected(int serverPort) throws InterruptedException, ExecutionException {
+        RxNetty.createTcpClient("localhost", serverPort).connect().flatMap(
                 new Func1<ObservableConnection<ByteBuf, ByteBuf>, Observable<?>>() {
                     @Override
                     public Observable<Void> call(ObservableConnection<ByteBuf, ByteBuf> connection) {

@@ -1,12 +1,12 @@
 /*
  * Copyright 2014 Netflix, Inc.
- * 
+ *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
  * You may obtain a copy of the License at
- * 
- * http://www.apache.org/licenses/LICENSE-2.0
- * 
+ *
+ *     http://www.apache.org/licenses/LICENSE-2.0
+ *
  * Unless required by applicable law or agreed to in writing, software
  * distributed under the License is distributed on an "AS IS" BASIS,
  * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
@@ -21,6 +21,7 @@ import io.netty.handler.codec.http.Cookie;
 import io.netty.handler.codec.http.DefaultHttpRequest;
 import io.netty.handler.codec.http.HttpHeaders;
 import io.netty.handler.codec.http.HttpMethod;
+import io.netty.handler.codec.http.HttpRequest;
 import io.netty.handler.codec.http.HttpVersion;
 import io.reactivex.netty.serialization.ByteTransformer;
 
@@ -46,13 +47,13 @@ public class HttpClientRequest<T> {
         }
     }
 
-    private final io.netty.handler.codec.http.HttpRequest nettyRequest;
+    private final HttpRequest nettyRequest;
     private final HttpRequestHeaders headers;
     protected ContentSourceFactory<T, ContentSource<T>> contentFactory;
     protected ContentSourceFactory<?, RawContentSource<?>> rawContentFactory;
     protected boolean userPassedInFactory;
 
-    /*Visible for testing*/ HttpClientRequest(io.netty.handler.codec.http.HttpRequest nettyRequest) {
+    /*Visible for testing*/ HttpClientRequest(HttpRequest nettyRequest) {
         this.nettyRequest = nettyRequest;
         headers = new HttpRequestHeaders(nettyRequest);
         contentFactory = null;
@@ -162,8 +163,7 @@ public class HttpClientRequest<T> {
         this.rawContentFactory = null;
     }
 
-    
-    io.netty.handler.codec.http.HttpRequest getNettyRequest() {
+    HttpRequest getNettyRequest() {
         return nettyRequest;
     }
 

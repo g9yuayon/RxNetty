@@ -1,3 +1,18 @@
+/*
+ * Copyright 2014 Netflix, Inc.
+ *
+ * Licensed under the Apache License, Version 2.0 (the "License");
+ * you may not use this file except in compliance with the License.
+ * You may obtain a copy of the License at
+ *
+ *     http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing, software
+ * distributed under the License is distributed on an "AS IS" BASIS,
+ * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+ * See the License for the specific language governing permissions and
+ * limitations under the License.
+ */
 package io.reactivex.netty;
 
 import io.reactivex.netty.codec.Codecs;
@@ -20,9 +35,13 @@ import rx.functions.Action1;
 import rx.functions.Action2;
 import rx.functions.Func1;
 import rx.functions.Func2;
+import rx.observables.MathObservable;
 import rx.schedulers.Schedulers;
 import rx.subjects.PublishSubject;
 import rx.subjects.ReplaySubject;
+
+import static org.junit.Assert.assertFalse;
+import static org.junit.Assert.assertTrue;
 
 public class RemoteObservableTest {
 
@@ -38,7 +57,7 @@ public class RemoteObservableTest {
 		// connect
 		Observable<Integer> oc = RemoteObservable.connect("localhost", serverPort, Codecs.integer());
 		// assert
-		Observable.sumInteger(oc).toBlockingObservable().forEach(new Action1<Integer>(){
+		MathObservable.sumInteger(oc).toBlockingObservable().forEach(new Action1<Integer>(){
 			@Override
 			public void call(Integer t1) {
 				Assert.assertEquals(5050, t1.intValue()); // sum of number 0-100
@@ -64,7 +83,7 @@ public class RemoteObservableTest {
 					.build())
 				.getObservable();
 		// assert
-		Observable.sumInteger(oc).toBlockingObservable().forEach(new Action1<Integer>(){
+        MathObservable.sumInteger(oc).toBlockingObservable().forEach(new Action1<Integer>(){
 			@Override
 			public void call(Integer t1) {
 				Assert.assertEquals(5050, t1.intValue()); // sum of number 0-100
@@ -86,7 +105,7 @@ public class RemoteObservableTest {
 		// connect
 		Observable<Integer> oc = RemoteObservable.connect("localhost", wrongPort, Codecs.integer());
 		// assert
-		Observable.sumInteger(oc).toBlockingObservable().forEach(new Action1<Integer>(){
+        MathObservable.sumInteger(oc).toBlockingObservable().forEach(new Action1<Integer>(){
 			@Override
 			public void call(Integer t1) {
 				Assert.assertEquals(5050, t1.intValue()); // sum of number 0-100
@@ -320,7 +339,7 @@ public class RemoteObservableTest {
 			.getObservable();
 
 		// assert
-		Observable.sumInteger(ro1).toBlockingObservable().forEach(new Action1<Integer>(){
+        MathObservable.sumInteger(ro1).toBlockingObservable().forEach(new Action1<Integer>(){
 			@Override
 			public void call(Integer t1) {
 				Assert.assertEquals(5050, t1.intValue()); // sum of number 0-100
@@ -366,7 +385,7 @@ public class RemoteObservableTest {
 		// connect
 		Observable<Integer> oc = RemoteObservable.connect("localhost", port, Codecs.integer());
 		// assert
-		Observable.sumInteger(oc).toBlockingObservable().forEach(new Action1<Integer>(){
+        MathObservable.sumInteger(oc).toBlockingObservable().forEach(new Action1<Integer>(){
 			@Override
 			public void call(Integer t1) {
 				Assert.assertEquals(20200, t1.intValue()); // sum of number 0-200
@@ -384,7 +403,8 @@ public class RemoteObservableTest {
 		final MutableReference<Boolean> stopped = new MutableReference<Boolean>(false);
 		// run in background
 		new Thread(){
-			public void run(){
+			@Override
+            public void run(){
 				RemoteRxServer server = RemoteObservable.serve(serverPort, os, Codecs.integer());
 				server.start();
 				server.blockUntilCompleted();
@@ -395,7 +415,7 @@ public class RemoteObservableTest {
 		// connect
 		Observable<Integer> oc = RemoteObservable.connect("localhost", serverPort, Codecs.integer());
 		// assert
-		Observable.sumInteger(oc).toBlockingObservable().forEach(new Action1<Integer>(){
+        MathObservable.sumInteger(oc).toBlockingObservable().forEach(new Action1<Integer>(){
 			@Override
 			public void call(Integer t1) {
 				Assert.assertEquals(5050, t1.intValue()); // sum of number 0-100
@@ -434,7 +454,7 @@ public class RemoteObservableTest {
 		// connect
 		Observable<Integer> oc = RemoteObservable.connect("localhost", serverPort, Codecs.integer());
 		// assert
-		Observable.sumInteger(oc).toBlockingObservable().forEach(new Action1<Integer>(){
+        MathObservable.sumInteger(oc).toBlockingObservable().forEach(new Action1<Integer>(){
 			@Override
 			public void call(Integer t1) {
 				Assert.assertEquals(45150, t1.intValue()); // sum of number 0-200
@@ -476,7 +496,7 @@ public class RemoteObservableTest {
 		subject.onCompleted();
 		
 		// assert
-		Observable.sumInteger(oc).toBlockingObservable().forEach(new Action1<Integer>(){
+        MathObservable.sumInteger(oc).toBlockingObservable().forEach(new Action1<Integer>(){
 			@Override
 			public void call(Integer t1) {
 				Assert.assertEquals(80200, t1.intValue()); // sum of number 0-200
@@ -508,7 +528,7 @@ public class RemoteObservableTest {
 		// merge results
 		Observable<Integer> merged = Observable.merge(oc1,oc2);
 		// assert
-		Observable.sumInteger(merged).toBlockingObservable().forEach(new Action1<Integer>(){
+		MathObservable.sumInteger(merged).toBlockingObservable().forEach(new Action1<Integer>(){
 			@Override
 			public void call(Integer t1) {
 				Assert.assertEquals(5050, t1.intValue()); // sum of number 0-100
@@ -561,7 +581,7 @@ public class RemoteObservableTest {
 			.getObservable();
 
 		
-		Observable.sumInteger(oc2).toBlockingObservable().forEach(new Action1<Integer>(){
+		MathObservable.sumInteger(oc2).toBlockingObservable().forEach(new Action1<Integer>(){
 			@Override
 			public void call(Integer t1) {
 				Assert.assertEquals(5050, t1.intValue()); // sum of number 0-100
@@ -583,7 +603,7 @@ public class RemoteObservableTest {
 		RemoteObservable.serve(serverPort, os, Codecs.integer())
 			.start();
 		Observable<Integer> oc = RemoteObservable.connect("localhost", serverPort, Codecs.integer());
-		Observable.sumInteger(oc).toBlockingObservable().forEach(new Action1<Integer>(){
+		MathObservable.sumInteger(oc).toBlockingObservable().forEach(new Action1<Integer>(){
 			@Override
 			public void call(Integer t1) {
 				Assert.assertEquals(5050, t1.intValue()); // sum of number 0-100
@@ -616,12 +636,12 @@ public class RemoteObservableTest {
 		// connect to remote observable
 		Observable<Integer> oc = RemoteObservable.connect("localhost", serverPort, Codecs.integer());
 		Subscription sub = oc.subscribe();
-		
-		Assert.assertEquals(false, sub.isUnsubscribed());
+
+        assertFalse(sub.isUnsubscribed());
 		Thread.sleep(1000); // allow a few iterations
 		sub.unsubscribe();
 		Thread.sleep(1000); // allow time for unsubscribe to propagate
-		Assert.assertEquals(true, sub.isUnsubscribed());
+        assertTrue(sub.isUnsubscribed());
 		Assert.assertEquals(true, sourceSubscriptionUnsubscribed.getValue());
 	}
 	
@@ -659,7 +679,7 @@ public class RemoteObservableTest {
 		Subscription subscription = oc2.subscribe();
 
 		// check client subscription
-		Assert.assertEquals(false, subscription.isUnsubscribed());
+        assertFalse(subscription.isUnsubscribed());
 		
 		Thread.sleep(1000); // allow a few iterations to complete
 		
@@ -667,7 +687,7 @@ public class RemoteObservableTest {
 		subscription.unsubscribe();
 		Thread.sleep(3000); // allow time for unsubscribe to propagate
 		// check client
-		Assert.assertEquals(true, subscription.isUnsubscribed());
+        assertTrue(subscription.isUnsubscribed());
 		// check source
 		Assert.assertEquals(true, sourceSubscriptionUnsubscribed.getValue());
 	}
@@ -703,7 +723,7 @@ public class RemoteObservableTest {
 			.getObservable();
 
 		// assert
-		Observable.sumInteger(oc).toBlockingObservable().forEach(new Action1<Integer>(){
+		MathObservable.sumInteger(oc).toBlockingObservable().forEach(new Action1<Integer>(){
 			@Override
 			public void call(Integer t1) {
 				Assert.assertEquals(2550, t1.intValue()); // sum of number 0-100

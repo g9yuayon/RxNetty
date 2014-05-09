@@ -15,49 +15,43 @@
  */
 package io.reactivex.netty.server;
 
-import io.netty.bootstrap.ServerBootstrap;
+import io.netty.bootstrap.AbstractBootstrap;
 import io.netty.buffer.PooledByteBufAllocator;
+import io.netty.channel.Channel;
 import io.netty.channel.ChannelOption;
 import io.netty.channel.EventLoopGroup;
-import io.netty.channel.ServerChannel;
-import io.netty.channel.nio.NioEventLoopGroup;
-import io.netty.channel.socket.nio.NioServerSocketChannel;
+import io.netty.handler.logging.LogLevel;
+import io.netty.handler.logging.LoggingHandler;
+import io.reactivex.netty.RxNetty;
 import io.reactivex.netty.channel.ConnectionHandler;
 import io.reactivex.netty.pipeline.PipelineConfigurator;
+import io.reactivex.netty.pipeline.PipelineConfigurators;
 
 /**
  * @author Nitesh Kant
  */
 @SuppressWarnings("rawtypes")
-public abstract class AbstractServerBuilder<I, O, B extends AbstractServerBuilder, S extends RxServer<I, O>> {
+public abstract class AbstractServerBuilder<I, O, T extends AbstractBootstrap<T, C>, C extends Channel,
+        B extends AbstractServerBuilder, S extends AbstractServer<I, O, T, C, S>> {
 
-    protected final int port;
-    protected final ServerBootstrap serverBootstrap;
-    protected final ConnectionHandler<I, O> connectionHandler;
-    protected Class<? extends ServerChannel> serverChannelClass;
+    protected final T serverBootstrap;
     protected PipelineConfigurator<I, O> pipelineConfigurator;
+    protected Class<? extends C> serverChannelClass;
+    protected final ConnectionHandler<I, O> connectionHandler;
+    protected final int port;
+    protected LogLevel wireLogginLevel;
 
-    protected AbstractServerBuilder(int port, ConnectionHandler<I, O> connectionHandler) {
-        this(port, connectionHandler, new ServerBootstrap());
-    }
-
-    protected AbstractServerBuilder(int port, ConnectionHandler<I, O> connectionHandler, ServerBootstrap bootstrap) {
+    protected AbstractServerBuilder(int port, T bootstrap, ConnectionHandler<I, O> connectionHandler) {
         if (null == connectionHandler) {
             throw new IllegalArgumentException("Connection handler can not be null");
         }
         if (null == bootstrap) {
             throw new IllegalArgumentException("Server bootstrap can not be null");
         }
-        serverBootstrap = bootstrap;
         this.port = port;
+        serverBootstrap = bootstrap;
         this.connectionHandler = connectionHandler;
-        serverChannelClass = NioServerSocketChannel.class;
         defaultChannelOptions();
-    }
-
-    public B eventLoops(EventLoopGroup acceptorGroup, EventLoopGroup workerGroup) {
-        serverBootstrap.group(acceptorGroup, workerGroup);
-        return returnBuilder();
     }
 
     public B eventLoop(EventLoopGroup singleGroup) {
@@ -65,7 +59,7 @@ public abstract class AbstractServerBuilder<I, O, B extends AbstractServerBuilde
         return returnBuilder();
     }
 
-    public B channel(Class<ServerChannel> serverChannelClass) {
+    public B channel(Class<C> serverChannelClass) {
         this.serverChannelClass = serverChannelClass;
         return returnBuilder();
     }
@@ -74,37 +68,59 @@ public abstract class AbstractServerBuilder<I, O, B extends AbstractServerBuilde
         serverBootstrap.option(option, value);
         return returnBuilder();
     }
-    
-    public <T> B childChannelOption(ChannelOption<T> option, T value) {
-        serverBootstrap.childOption(option, value);
-        return returnBuilder();
-    }
-
-    public B defaultChannelOptions() {
-        channelOption(ChannelOption.SO_KEEPALIVE, true);
-        channelOption(ChannelOption.ALLOCATOR, PooledByteBufAllocator.DEFAULT);
-        childChannelOption(ChannelOption.SO_KEEPALIVE, true);
-        childChannelOption(ChannelOption.ALLOCATOR, PooledByteBufAllocator.DEFAULT);        
-        return returnBuilder();
-    }
 
     public B pipelineConfigurator(PipelineConfigurator<I, O> pipelineConfigurator) {
         this.pipelineConfigurator = pipelineConfigurator;
         return returnBuilder();
     }
 
+    public B appendPipelineConfigurator(PipelineConfigurator<I, O> additionalConfigurator) {
+        return pipelineConfigurator(PipelineConfigurators.composeConfigurators(pipelineConfigurator,
+                                                                               additionalConfigurator));
+    }
+
+    /**
+     * Enables wire level logs (all events received by netty) to be logged at the passed {@code wireLogginLevel}. <br/>
+     *
+     * Since, in most of the production systems, the logging level is set to {@link LogLevel#WARN} or
+     * {@link LogLevel#ERROR}, if this wire level logging is required for all requests (not at all recommended as this
+     * logging is very verbose), the passed level must be {@link LogLevel#WARN} or {@link LogLevel#ERROR} respectively. <br/>
+     *
+     * It is recommended to set this level to {@link LogLevel#DEBUG} and then dynamically enabled disable this log level
+     * whenever required. <br/>
+     *
+     * @param wireLogginLevel Log level at which the wire level logs will be logged.
+     *
+     * @return This builder.
+     *
+     * @see LoggingHandler
+     */
+    public B enableWireLogging(LogLevel wireLogginLevel) {
+        this.wireLogginLevel = wireLogginLevel;
+        return returnBuilder();
+    }
+
+    public B defaultChannelOptions() {
+        channelOption(ChannelOption.ALLOCATOR, PooledByteBufAllocator.DEFAULT);
+        return returnBuilder();
+    }
+
+    public PipelineConfigurator<I, O> getPipelineConfigurator() {
+        return pipelineConfigurator;
+    }
+
     public S build() {
         if (null == serverChannelClass) {
-            serverChannelClass = NioServerSocketChannel.class;
+            serverChannelClass = defaultServerChannelClass();
             EventLoopGroup acceptorGroup = serverBootstrap.group();
             if (null == acceptorGroup) {
-                serverBootstrap.group(new NioEventLoopGroup(0 /*means default in netty*/, new RxServerThreadFactory()));
+                serverBootstrap.group(RxNetty.getRxEventLoopProvider().globalServerEventLoop());
             }
         }
 
         if (null == serverBootstrap.group()) {
-            if (NioServerSocketChannel.class == serverChannelClass) {
-                serverBootstrap.group(new NioEventLoopGroup(0 /*means default in netty*/, new RxServerThreadFactory()));
+            if (defaultServerChannelClass() == serverChannelClass) {
+                serverBootstrap.group(RxNetty.getRxEventLoopProvider().globalServerEventLoop());
             } else {
                 // Fail fast for defaults we do not support.
                 throw new IllegalStateException("Specified a channel class but not the event loop group.");
@@ -112,8 +128,14 @@ public abstract class AbstractServerBuilder<I, O, B extends AbstractServerBuilde
         }
 
         serverBootstrap.channel(serverChannelClass);
+        if (null != wireLogginLevel) {
+            pipelineConfigurator = PipelineConfigurators.appendLoggingConfigurator(pipelineConfigurator,
+                                                                                   wireLogginLevel);
+        }
         return createServer();
     }
+
+    protected abstract Class<? extends C> defaultServerChannelClass();
 
     protected abstract S createServer();
 

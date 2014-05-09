@@ -21,14 +21,12 @@ import io.netty.channel.ChannelOption;
 import io.netty.channel.ConnectTimeoutException;
 import io.netty.channel.nio.NioEventLoopGroup;
 import io.netty.handler.codec.http.HttpResponseStatus;
+import io.netty.handler.logging.LogLevel;
 import io.netty.handler.timeout.ReadTimeoutException;
 import io.reactivex.netty.RxNetty;
 import io.reactivex.netty.channel.ObservableConnection;
 import io.reactivex.netty.client.RxClient;
 import io.reactivex.netty.client.RxClient.ClientConfig.Builder;
-import io.reactivex.netty.client.RxClient.ServerInfo;
-import io.reactivex.netty.client.pool.AbstractQueueBasedChannelPool.PoolExhaustedException;
-import io.reactivex.netty.client.pool.DefaultChannelPool;
 import io.reactivex.netty.pipeline.PipelineConfigurators;
 import io.reactivex.netty.protocol.http.client.HttpClient.HttpClientConfig;
 import io.reactivex.netty.protocol.http.server.HttpServer;
@@ -49,7 +47,6 @@ import java.net.ConnectException;
 import java.nio.charset.Charset;
 import java.util.ArrayList;
 import java.util.List;
-import java.util.Random;
 import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicReference;
@@ -67,16 +64,35 @@ public class HttpClientTest {
 
     @BeforeClass
     public static void init() {
-        port = new Random().nextInt(1000) + 4000;
-        HttpServerBuilder<ByteBuf, ByteBuf> builder 
+        HttpServerBuilder<ByteBuf, ByteBuf> builder
             = new HttpServerBuilder<ByteBuf, ByteBuf>(new ServerBootstrap().group(new NioEventLoopGroup(10, new RxServerThreadFactory())), port, new RequestProcessor());
-        server = builder.build();
+        server = builder.enableWireLogging(LogLevel.ERROR).build();
         server.start();
+        port = server.getServerPort(); // Using ephemeral ports
+        System.out.println("Mock server using ephemeral port; " + port);
     }
 
     @AfterClass
     public static void shutDown() throws InterruptedException {
         server.shutdown();
+    }
+    private static String invokeBlockingCall(HttpClient<ByteBuf, ByteBuf> client, String uri) {
+        return invokeBlockingCall(client, HttpClientRequest.createGet(uri));
+    }
+
+    private static String invokeBlockingCall(HttpClient<ByteBuf, ByteBuf> client, HttpClientRequest<ByteBuf> request) {
+        Observable<HttpClientResponse<ByteBuf>> response = client.submit(request);
+        return response.flatMap(new Func1<HttpClientResponse<ByteBuf>, Observable<String>>() {
+            @Override
+            public Observable<String> call(HttpClientResponse<ByteBuf> response) {
+                return response.getContent().map(new Func1<ByteBuf, String>() {
+                    @Override
+                    public String call(ByteBuf byteBuf) {
+                        return byteBuf.toString(Charset.defaultCharset());
+                    }
+                });
+            }
+        }).toBlockingObservable().single();
     }
 
     @Test
@@ -162,7 +178,8 @@ public class HttpClientTest {
 
     @Test
     public void testSingleEntity() throws Exception {
-        HttpClient<ByteBuf, ByteBuf> client = RxNetty.createHttpClient("localhost", port);
+        HttpClient<ByteBuf, ByteBuf> client = RxNetty.<ByteBuf, ByteBuf>newHttpClientBuilder("localhost", port)
+                                                     .enableWireLogging(LogLevel.ERROR).build();
         Observable<HttpClientResponse<ByteBuf>> response = client.submit(HttpClientRequest.createGet("test/singleEntity"));
         final List<String> result = new ArrayList<String>();
         response.flatMap(new Func1<HttpClientResponse<ByteBuf>, Observable<String>>() {
@@ -182,7 +199,7 @@ public class HttpClientTest {
                 result.add(t1);
             }
         });
-        assertEquals(1, result.size());
+        assertEquals("Response not found.", 1, result.size());
         assertEquals("Hello world", result.get(0));
     }
 
@@ -317,12 +334,13 @@ public class HttpClientTest {
 
     @Test
     public void testTimeout() throws Exception {
-        RxClient.ClientConfig clientConfig = new Builder(RxClient.ClientConfig.DEFAULT_CONFIG)
-                .readTimeout(10, TimeUnit.MILLISECONDS).build();
-        HttpClient<ByteBuf, ByteBuf> client = new HttpClientBuilder<ByteBuf, ByteBuf>("localhost", port).config(
-                clientConfig).build();
+        int timeoutMillis = 10;
+        RxClient.ClientConfig clientConfig = new Builder(null)
+                .readTimeout(timeoutMillis, TimeUnit.MILLISECONDS).build();
+        HttpClient<ByteBuf, ByteBuf> client = new HttpClientBuilder<ByteBuf, ByteBuf>("localhost", port)
+                .config(clientConfig).build();
         Observable<HttpClientResponse<ByteBuf>> response =
-                client.submit(HttpClientRequest.createGet("test/timeout?timeout=10000"));
+                client.submit(HttpClientRequest.createGet("test/timeout?timeout=" + timeoutMillis * 2 /*Create bigger wait than timeout*/));
 
         final CountDownLatch latch = new CountDownLatch(1);
         final AtomicReference<Throwable> exception = new AtomicReference<Throwable>();
@@ -343,7 +361,7 @@ public class HttpClientTest {
                 latch.countDown();
             }
         });
-        if (!latch.await(2, TimeUnit.SECONDS)) {
+        if (!latch.await(1, TimeUnit.MINUTES)) {
             fail("Observer is not called without timeout");
         } else {
             assertTrue(exception.get() instanceof ReadTimeoutException);
@@ -354,7 +372,7 @@ public class HttpClientTest {
 
     @Test
     public void testNoReadTimeout() throws Exception {
-        RxClient.ClientConfig clientConfig = new Builder(RxClient.ClientConfig.DEFAULT_CONFIG)
+        RxClient.ClientConfig clientConfig = new Builder(null)
                 .readTimeout(2, TimeUnit.SECONDS).build();
         HttpClient<ByteBuf, ByteBuf> client = new HttpClientBuilder<ByteBuf, ByteBuf>("localhost", port).config(clientConfig).build();
         Observable<HttpClientResponse<ByteBuf>> response =
@@ -385,259 +403,12 @@ public class HttpClientTest {
         assertNull(exceptionHolder.get());
     }
 
-    private String invokeBlockingCall(HttpClient<ByteBuf, ByteBuf> client, String uri) {
-        return invokeBlockingCall(client, HttpClientRequest.createGet(uri));
-    }
-    
-    private String invokeBlockingCall(HttpClient<ByteBuf, ByteBuf> client, HttpClientRequest<ByteBuf> request) {
-        Observable<HttpClientResponse<ByteBuf>> response = client.submit(request);
-        return response.flatMap(new Func1<HttpClientResponse<ByteBuf>, Observable<String>>() {
-            @Override
-            public Observable<String> call(HttpClientResponse<ByteBuf> response) {
-                return response.getContent().map(new Func1<ByteBuf, String>() {
-                    @Override
-                    public String call(ByteBuf byteBuf) {
-                        return byteBuf.toString(Charset.defaultCharset());
-                    }
-                });
-            }
-        }).toBlockingObservable().single();
-    }
-    
-    @Test
-    public void testChannelPool() throws Exception {
-        HttpClientBuilder<ByteBuf, ByteBuf> clientBuilder = new HttpClientBuilder<ByteBuf, ByteBuf>("www.google.com", 80);
-        DefaultChannelPool pool = new DefaultChannelPool(10);
-        clientBuilder.channelPool(pool);
-        HttpClient<ByteBuf, ByteBuf> client = clientBuilder.build();
-        String content = invokeBlockingCall(client, "/");
-        assertNotNull(content);
-        // connection recycling happen asynchronously
-        Thread.sleep(1000);
-        assertEquals(1, pool.getIdleChannels());
-        
-        content = invokeBlockingCall(client, "/");
-        assertNotNull(content);
-        // connection recycling happen asynchronously
-        Thread.sleep(1000);
-        assertEquals(1, pool.getIdleChannels());
-        assertEquals(1, pool.getTotalChannelsInPool());
-        assertEquals(1, pool.getCreationCount());
-        assertEquals(1, pool.getReuseCount());
-        assertEquals(2, pool.getSuccessfulRequestCount());
-        assertEquals(2, pool.getReleaseCount());
-        assertEquals(0, pool.getDeletionCount());
-        
-        // create a new client using the same pool
-        clientBuilder = new HttpClientBuilder<ByteBuf, ByteBuf>("www.google.com", 80);
-        clientBuilder.channelPool(pool);        
-        client = clientBuilder.build();
-        content = invokeBlockingCall(client, "/");
-        assertNotNull(content);
-        Thread.sleep(1000);
-        assertEquals(1, pool.getIdleChannels());
-        assertEquals(1, pool.getTotalChannelsInPool());
-        assertEquals(1, pool.getCreationCount());
-        assertEquals(2, pool.getReuseCount());
-        assertEquals(3, pool.getSuccessfulRequestCount());
-        assertEquals(3, pool.getReleaseCount());
-        assertEquals(0, pool.getDeletionCount());
-    }
-    
-    @Test
-    public void testChannelPoolIdleTimeout() throws Exception {
-        HttpClientBuilder<ByteBuf, ByteBuf> clientBuilder = new HttpClientBuilder<ByteBuf, ByteBuf>("www.google.com", 80);
-        // idle timeout after 500 ms
-        DefaultChannelPool pool = new DefaultChannelPool(10, 500);
-        clientBuilder.channelPool(pool);
-        HttpClient<ByteBuf, ByteBuf> client = clientBuilder.build();
-        String content = invokeBlockingCall(client, "/");
-        assertNotNull(content);
-        Thread.sleep(1000);
-        
-        content = invokeBlockingCall(client, "/");
-        // previous connection should timed out, no reuse
-        Thread.sleep(1000);
-        assertEquals(1, pool.getIdleChannels());
-        assertEquals(1, pool.getTotalChannelsInPool());
-        assertEquals(2, pool.getCreationCount());
-        assertEquals(0, pool.getReuseCount());
-        assertEquals(2, pool.getSuccessfulRequestCount());
-        assertEquals(2, pool.getReleaseCount());
-        assertEquals(1, pool.getDeletionCount());
-    }
-    
-    @Test
-    public void testCloseConnection() throws Exception {
-        HttpClientBuilder<ByteBuf, ByteBuf> clientBuilder = new HttpClientBuilder<ByteBuf, ByteBuf>("localhost", port);
-        // idle timeout after 500 ms
-        DefaultChannelPool pool = new DefaultChannelPool(10);
-        clientBuilder.channelPool(pool);
-        HttpClient<ByteBuf, ByteBuf> client = clientBuilder.build();
-        String content = invokeBlockingCall(client, "test/closeConnection");
-        assertNotNull(content);
-        Thread.sleep(1000);
-        assertEquals(0, pool.getIdleChannels());
-        assertEquals(0, pool.getTotalChannelsInPool());
-        assertEquals(1, pool.getCreationCount());
-        assertEquals(1, pool.getSuccessfulRequestCount());
-        assertEquals(1, pool.getReleaseCount());
-        assertEquals(1, pool.getDeletionCount());
-    }
-    
-    @Test
-    public void testKeepAliveTimeout() throws Exception {
-        HttpClientBuilder<ByteBuf, ByteBuf> clientBuilder = new HttpClientBuilder<ByteBuf, ByteBuf>("localhost", port);
-        // idle timeout after 500 ms
-        DefaultChannelPool pool = new DefaultChannelPool(10);
-        clientBuilder.channelPool(pool);
-        HttpClient<ByteBuf, ByteBuf> client = clientBuilder.build();
-        // issue two requests and the second one should reuse the first connection
-        String content = invokeBlockingCall(client, "test/keepAliveTimeout");
-        assertNotNull(content);
-        // wait until connection is released
-        Thread.sleep(200);
-        content = invokeBlockingCall(client, "test/keepAliveTimeout");
-        assertNotNull(content);
-        Thread.sleep(200);
-        assertEquals(1, pool.getReuseCount());
-        assertEquals(1, pool.getIdleChannels());
-        assertEquals(1, pool.getTotalChannelsInPool());
-        assertEquals(1, pool.getCreationCount());
-        assertEquals(2, pool.getSuccessfulRequestCount());
-        assertEquals(2, pool.getReleaseCount());
-        assertEquals(0, pool.getDeletionCount());
-        
-        // try again, this will not reuse the connection as Keep-Alive header from previous response
-        Thread.sleep(1000);
-        content = invokeBlockingCall(client, "test/keepAliveTimeout");
-        Thread.sleep(1000);
-        // no increase in the channel reuse
-        assertEquals(1, pool.getReuseCount());
-        assertEquals(1, pool.getDeletionCount());
-        assertEquals(1, pool.getIdleChannels());
-        assertEquals(1, pool.getTotalChannelsInPool());
-        assertEquals(2, pool.getCreationCount());
-    }
-
-    private Throwable waitForError(HttpClient<ByteBuf, ByteBuf> client, String uri) throws Exception {
-        final Throwable[] error = new Throwable[1];
-        final CountDownLatch latch = new CountDownLatch(1);
-        Observable<HttpClientResponse<ByteBuf>> response = client.submit(HttpClientRequest.createGet(uri));
-        response.subscribe(new Action1<HttpClientResponse<ByteBuf>>() {
-            @Override
-            public void call(HttpClientResponse<ByteBuf> t1) {
-            }
-        }, new Action1<Throwable>() {
-
-            @Override
-            public void call(Throwable t1) {
-                error[0] = t1;
-                latch.countDown();
-            }
-        });
-        latch.await(30, TimeUnit.SECONDS);
-        return error[0];
-    }
-    
-    @Test
-    public void testReadtimeoutCloseConnection() throws Exception {
-        RxClient.ClientConfig clientConfig = new Builder(RxClient.ClientConfig.DEFAULT_CONFIG)
-                .readTimeout(100, TimeUnit.MILLISECONDS).build();
-        DefaultChannelPool pool = new DefaultChannelPool(10);
-        HttpClient<ByteBuf, ByteBuf> client = new HttpClientBuilder<ByteBuf, ByteBuf>("localhost", port).config(
-                clientConfig).channelPool(pool).build();
-        Throwable error = waitForError(client, "test/timeout?timeout=1000");
-        assertNotNull(error);
-        assertTrue(error instanceof ReadTimeoutException);
-        Thread.sleep(1200);
-        assertEquals(1, pool.getIdleChannels());
-        assertEquals(1, pool.getTotalChannelsInPool());
-        assertEquals(1, pool.getCreationCount());
-        assertEquals(1, pool.getSuccessfulRequestCount());
-        assertEquals(1, pool.getReleaseCount());
-        //assertEquals(1, pool.getDeletionCount()); TODO: We should listen to channel close events, which should trigger this deletion.
-    }
-    
-    @Test
-    public void testPoolExhaustedException() throws Exception {
-        DefaultChannelPool pool = new DefaultChannelPool(2);
-        HttpClient<ByteBuf, ByteBuf> client = new HttpClientBuilder<ByteBuf, ByteBuf>("localhost", port).channelPool(pool).build();
-        client.submit(HttpClientRequest.createGet("test/timeout?timeout=2000")).subscribe(new Action1<HttpClientResponse<ByteBuf>>() {
-            @Override
-            public void call(HttpClientResponse<ByteBuf> t1) {
-            }
-        });
-        client.submit(HttpClientRequest.createGet("test/timeout?timeout=2000")).subscribe(new Action1<HttpClientResponse<ByteBuf>>() {
-            @Override
-            public void call(HttpClientResponse<ByteBuf> t1) {
-            }
-        });
-        Thread.sleep(1000);
-        assertEquals(2, pool.getTotalChannelsInPool());
-        Throwable error = waitForError(client, "test/timeout?timeout=2000");
-        assertNotNull(error);
-        assertTrue(error instanceof PoolExhaustedException);
-        assertEquals(1, pool.getFailedRequestCount());
-    }
-    
-    @Test
-    public void testConnectExceptionFromPool() throws Exception {
-        DefaultChannelPool pool = new DefaultChannelPool(2);
-        HttpClient<ByteBuf, ByteBuf> client = new HttpClientBuilder<ByteBuf, ByteBuf>("localhost", 12345).channelPool(pool).build();
-        Throwable error = waitForError(client, "/");
-        assertNotNull(error);
-        assertTrue(error instanceof ConnectException);
-        assertEquals(1, pool.getFailedRequestCount());
-    }
-
-    @Test
-    public void testIdleChannelsRemoval() throws Exception {
-        DefaultChannelPool pool = new DefaultChannelPool(2);
-        HttpClient<ByteBuf, ByteBuf> client = new HttpClientBuilder<ByteBuf, ByteBuf>("localhost", port).channelPool(pool).build();
-        client.submit(HttpClientRequest.createGet("test/timeout?timeout=1000")).subscribe(new Action1<HttpClientResponse<ByteBuf>>() {
-            @Override
-            public void call(HttpClientResponse<ByteBuf> t1) {
-            }
-        });
-        client.submit(HttpClientRequest.createGet("test/timeout?timeout=1000")).subscribe(new Action1<HttpClientResponse<ByteBuf>>() {
-            @Override
-            public void call(HttpClientResponse<ByteBuf> t1) {
-            }
-        });
-        Thread.sleep(1500);
-        assertEquals(2, pool.getTotalChannelsInPool());
-        assertEquals(2, pool.getIdleChannels());
-        // pool has reached to its capacity, but we should be able to create new channel since there are
-        // idle channels that can be removed
-        client = new HttpClientBuilder<ByteBuf, ByteBuf>("www.google.com", 80).channelPool(pool).build();
-        String content = invokeBlockingCall(client, "/");
-        assertNotNull(content);
-        Thread.sleep(1000);
-        assertEquals(2, pool.getIdleChannels());
-        assertEquals(2, pool.getTotalChannelsInPool());
-        assertEquals(3, pool.getCreationCount());
-        assertEquals(3, pool.getSuccessfulRequestCount());
-        assertEquals(3, pool.getReleaseCount());
-        assertEquals(1, pool.getDeletionCount());
-        assertEquals(1, pool.getIdleQueue(new ServerInfo("localhost", port)).size());
-        assertEquals(1, pool.getIdleQueue(new ServerInfo("www.google.com", 80)).size());
-        
-        int count = pool.cleanUpIdleChannels();
-        assertEquals(2, count);
-        assertEquals(0, pool.getIdleChannels());
-        assertEquals(0, pool.getTotalChannelsInPool());
-    }
-    
     @Test
     public void testRedirect() {
-        DefaultChannelPool pool = new DefaultChannelPool(2);
-        HttpClientConfig.Builder builder = new HttpClientConfig.Builder(HttpClientConfig.DEFAULT_CONFIG);
-        HttpClientConfig config = builder.followRedirect()
-                .readTimeout(20000, TimeUnit.MILLISECONDS)
+        HttpClientConfig.Builder builder = new HttpClientConfig.Builder(null);
+        HttpClientConfig config = builder.readTimeout(20000, TimeUnit.MILLISECONDS)
                 .build();
         HttpClient<ByteBuf, ByteBuf> client = new HttpClientBuilder<ByteBuf, ByteBuf>("localhost", port)
-                .channelPool(pool)
                 .config(config)
                 .build();
         String content = invokeBlockingCall(client, "test/redirect?port=" + port);
@@ -645,9 +416,23 @@ public class HttpClientTest {
     }
     
     @Test
+    public void testNoRedirect() {
+        HttpClientConfig.Builder builder = new HttpClientConfig.Builder(null).setFollowRedirect(false);
+        HttpClientRequest<ByteBuf> request = HttpClientRequest.createGet("test/redirect?port=" + port);
+        HttpClientConfig config = builder.readTimeout(20000, TimeUnit.MILLISECONDS)
+                .build();
+        HttpClient<ByteBuf, ByteBuf> client = new HttpClientBuilder<ByteBuf, ByteBuf>("localhost", port)
+                .config(config)
+                .build();
+        HttpClientResponse<ByteBuf> response = client.submit(request).toBlockingObservable().single();
+        assertEquals(HttpResponseStatus.MOVED_PERMANENTLY.code(), response.getStatus().code());
+    }
+
+
+    @Test
     public void testRedirectPost() {
-        HttpClientConfig.Builder builder = new HttpClientConfig.Builder(HttpClientConfig.DEFAULT_CONFIG);
-        HttpClientConfig config = builder.followRedirect().build();
+        HttpClientConfig.Builder builder = new HttpClientConfig.Builder(null);
+        HttpClientConfig config = builder.setFollowRedirect(true).build();
         HttpClientRequest<ByteBuf> request = HttpClientRequest.createPost("test/redirectPost?port=" + port)
                 .withContent("Hello world");
         HttpClient<ByteBuf, ByteBuf> client = new HttpClientBuilder<ByteBuf, ByteBuf>("localhost", port)
@@ -655,6 +440,19 @@ public class HttpClientTest {
                 .build();
         String content = invokeBlockingCall(client, request);
         assertEquals("Hello world", content);
+    }
+
+    @Test
+    public void testNoRedirectPost() {
+        HttpClientConfig.Builder builder = new HttpClientConfig.Builder(null);
+        HttpClientConfig config = builder.build();
+        HttpClientRequest<ByteBuf> request = HttpClientRequest.createPost("test/redirectPost?port=" + port)
+                .withContent("Hello world");
+        HttpClient<ByteBuf, ByteBuf> client = new HttpClientBuilder<ByteBuf, ByteBuf>("localhost", port)
+                .config(config)
+                .build();
+        HttpClientResponse<ByteBuf> response = client.submit(request).toBlockingObservable().single();
+        assertEquals(HttpResponseStatus.MOVED_PERMANENTLY.code(), response.getStatus().code());
     }
 
 

@@ -15,84 +15,82 @@
  */
 package io.reactivex.netty.protocol.http.client;
 
-import java.net.URI;
-
 import io.netty.bootstrap.Bootstrap;
 import io.netty.handler.codec.http.HttpHeaders;
 import io.netty.handler.codec.http.HttpMethod;
-import io.netty.handler.codec.http.HttpRequest;
 import io.reactivex.netty.channel.ObservableConnection;
+import io.reactivex.netty.client.ClientChannelAbstractFactory;
+import io.reactivex.netty.client.ConnectionPool;
 import io.reactivex.netty.client.RxClientImpl;
-import io.reactivex.netty.client.pool.ChannelPool;
 import io.reactivex.netty.pipeline.PipelineConfigurator;
-import io.reactivex.netty.pipeline.PipelineConfiguratorComposite;
 import rx.Observable;
 import rx.Observer;
 import rx.Subscriber;
 import rx.Subscription;
 import rx.functions.Action0;
-import rx.functions.Action1;
-import rx.functions.Func1;
 import rx.subscriptions.Subscriptions;
 
 public class HttpClientImpl<I, O> extends RxClientImpl<HttpClientRequest<I>, HttpClientResponse<O>> implements HttpClient<I, O> {
 
     public HttpClientImpl(ServerInfo serverInfo, Bootstrap clientBootstrap,
-            PipelineConfigurator<HttpClientResponse<O>, HttpClientRequest<I>> pipelineConfigurator, ClientConfig clientConfig, ChannelPool pool) {
-        super(serverInfo, clientBootstrap, pipelineConfigurator, clientConfig, pool);
+            PipelineConfigurator<HttpClientResponse<O>, HttpClientRequest<I>> pipelineConfigurator,
+            ClientConfig clientConfig, ConnectionPool<HttpClientResponse<O>, HttpClientRequest<I>> pool,
+            ClientChannelAbstractFactory<HttpClientResponse<O>, HttpClientRequest<I>> clientChannelAbstractFactory) {
+        super(serverInfo, clientBootstrap, pipelineConfigurator, clientConfig, clientChannelAbstractFactory, pool);
     }
-    
+
     public HttpClientImpl(ServerInfo serverInfo, Bootstrap clientBootstrap,
-                          PipelineConfigurator<HttpClientResponse<O>, HttpClientRequest<I>> pipelineConfigurator, ClientConfig clientConfig) {
-        super(serverInfo, clientBootstrap, pipelineConfigurator, clientConfig);
+                          PipelineConfigurator<HttpClientResponse<O>, HttpClientRequest<I>> pipelineConfigurator,
+                          ClientConfig clientConfig) {
+        this(serverInfo, clientBootstrap, pipelineConfigurator, clientConfig, null,
+             new HttpClientChannelAbstractFactory<I, O>());
     }
 
     @Override
     public Observable<HttpClientResponse<O>> submit(HttpClientRequest<I> request) {
-        Observable<ObservableConnection<HttpClientResponse<O>, HttpClientRequest<I>>> connectionObservable = connect();
-        return submit(request, connectionObservable);
+        return submit(request, connect());
     }
 
     @Override
     public Observable<HttpClientResponse<O>> submit(HttpClientRequest<I> request, ClientConfig config) {
-        Observable<ObservableConnection<HttpClientResponse<O>, HttpClientRequest<I>>> connectionObservable = connect();
-        return submit(request, connectionObservable, config);
+        return submit(request, connect(), config);
     }
 
     protected Observable<HttpClientResponse<O>> submit(final HttpClientRequest<I> request,
-                                              Observable<ObservableConnection<HttpClientResponse<O>, HttpClientRequest<I>>> connectionObservable) {
+                                                       Observable<ObservableConnection<HttpClientResponse<O>, HttpClientRequest<I>>> connectionObservable) {
         return submit(request, connectionObservable, null == clientConfig
-                                                     ? HttpClientConfig.DEFAULT_CONFIG : clientConfig);
+                                                     ? HttpClientConfig.Builder.newDefaultConfig() : clientConfig);
     }
     
-    private static boolean isFollowRedirect(ClientConfig config) {
+    protected boolean shouldFollowRedirectForRequest(ClientConfig config, HttpClientRequest<I> request) {
+        Boolean followRedirect;
         if (config instanceof HttpClientConfig) {
-            return ((HttpClientConfig) config).isFollowRedirect();
+            followRedirect = ((HttpClientConfig) config).getFollowRedirect();
+        } else {
+            followRedirect = Boolean.FALSE;
         }
-        return false;
+        if (followRedirect == Boolean.TRUE) {
+            // caller has explicitly set follow redirect, we will follow redirect for all requests
+            return true;
+        } else if (followRedirect == null && (request.getMethod() == HttpMethod.HEAD || request.getMethod() == HttpMethod.GET)) {
+            // no option is set, we should follow GET and HEAD
+            return true;
+        } else {
+            return false;
+        }
     }
 
-    protected Observable<HttpClientResponse<O>> submit(final HttpClientRequest<I> request,
-                                                 final Observable<ObservableConnection<HttpClientResponse<O>, HttpClientRequest<I>>> connectionObservable,
-                                                 final ClientConfig config) {
-        boolean isFollowRedirect = isFollowRedirect(config);
-        final HttpClientRequest<I> _request;
-        if (isFollowRedirect && request.hasContentSource() 
-                && ! (request instanceof RepeatableContentHttpRequest)) {
-            // need to make sure content source 
-            // is repeatable when we resubmit the request to the redirected host
-            _request = new RepeatableContentHttpRequest<I>(request);
-        } else {
-            _request = request;
-        }
-        enrichRequest(_request, config);
+    protected Observable<HttpClientResponse<O>> submitWithoutRedirect(final HttpClientRequest<I> request,
+            final Observable<ObservableConnection<HttpClientResponse<O>, HttpClientRequest<I>>> connectionObservable,
+            final ClientConfig config) {
+        enrichRequest(request, config);
 
         // Here we do not map the connection Observable and return because the onComplete() of connectionObservable,
         // does not indicate onComplete of the request processing.
-        final Observable<HttpClientResponse<O>> response = Observable.create(new Observable.OnSubscribe<HttpClientResponse<O>>() {
+        return Observable.create(new Observable.OnSubscribe<HttpClientResponse<O>>() {
             @Override
             public void call(final Subscriber<? super HttpClientResponse<O>> subscriber) {
-                final ConnectObserver<I, O> connectObserver = new ConnectObserver<I, O>(_request, subscriber);
+                final ConnectObserver<I, O> connectObserver = new ConnectObserver<I, O>(request, subscriber);
                 final Subscription connectSubscription = connectionObservable.subscribe(connectObserver);
                 subscriber.add(Subscriptions.create(new Action0() {
                     @Override
@@ -103,72 +101,23 @@ public class HttpClientImpl<I, O> extends RxClientImpl<HttpClientRequest<I>, Htt
                 }));
             }
         });
-        if (!isFollowRedirect) {
-            return response;
+    }
+    
+    protected Observable<HttpClientResponse<O>> submit(final HttpClientRequest<I> request,
+                                                 final Observable<ObservableConnection<HttpClientResponse<O>, HttpClientRequest<I>>> connectionObservable,
+                                                 final ClientConfig config) {
+        if (shouldFollowRedirectForRequest(config, request)) {
+            FollowRedirectHttpClientImpl<I, O> redirectClient =
+                    new FollowRedirectHttpClientImpl<I, O>(serverInfo, clientBootstrap, originalPipelineConfigurator,
+                                                           clientConfig, pool, clientChannelAbstractFactory);
+            return redirectClient.submit(request, connectionObservable, config);
+        } else {
+            return submitWithoutRedirect(request, connectionObservable, config);
         }
-        // follow redirect logic
-        return response.flatMap(new Func1<HttpClientResponse<O>, Observable<HttpClientResponse<O>>>() {
-            @Override
-            public Observable<HttpClientResponse<O>> call(
-                    HttpClientResponse<O> responseToCheckRedirect) {
-                int statusCode = responseToCheckRedirect.getStatus().code();
-                switch (statusCode) {
-                case 301:
-                case 302:
-                case 303:
-                case 307:
-                case 308:
-                    String location = responseToCheckRedirect.getHeaders().get(HttpHeaders.Names.LOCATION);
-                    if (location == null) {
-                        return Observable.error(new Exception("Location header is not set in the redirect response"));
-                    } 
-                    URI uri;
-                    try {
-                        uri = new URI(location);
-                    } catch (Exception e) {
-                        return Observable.error(e);
-                    }
-                    String host = uri.getHost();
-                    int port = uri.getPort();
-                    if (port < 0) {
-                        port = 80;
-                    }
-                    HttpClientImpl<I, O> redirectClient = new HttpClientImpl<I, O>(new ServerInfo(host, port), clientBootstrap, originalPipelineConfigurator, config);
-                    HttpClientRequest<I> newRequest = copyRequest(_request, uri.getRawPath(), statusCode);
-                    newRequest.getHeaders().set(HttpHeaders.Names.HOST, host);
-                    return redirectClient.submit(newRequest, config);
-                default:
-                    break;
-                }
-                return Observable.from(responseToCheckRedirect);
-            }
-        });
     }
 
-    private static <I> HttpClientRequest<I> copyRequest(HttpClientRequest<I> original, String newURI, int statusCode) {
-        HttpRequest nettyRequest = original.getNettyRequest();
-        nettyRequest.setUri(newURI);
-        if (statusCode == 303) {
-            // according to HTTP spec, 303 mandates the change of request type to GET
-            nettyRequest.setMethod(HttpMethod.GET);
-        }
-        HttpClientRequest<I> newRequest = new HttpClientRequest<I>(nettyRequest);
-        if (statusCode != 303) {
-            // if status code is 303, we can just leave the content factory to be null
-            newRequest.contentFactory = original.contentFactory;
-            newRequest.rawContentFactory = original.rawContentFactory;
-        }
-        return newRequest;
-    }
-    
-    
-    @Override
-    protected PipelineConfigurator<HttpClientRequest<I>, HttpClientResponse<O>> getPipelineConfiguratorForAChannel(ClientConnectionHandler clientConnectionHandler,
-                                                                                                       PipelineConfigurator<HttpClientResponse<O>, HttpClientRequest<I>> pipelineConfigurator) {
-        PipelineConfigurator<HttpClientResponse<O>, HttpClientRequest<I>> configurator =
-                new PipelineConfiguratorComposite<HttpClientResponse<O>, HttpClientRequest<I>>(pipelineConfigurator,
-                                                                                   new ClientRequiredConfigurator<I, O>());
-        return super.getPipelineConfiguratorForAChannel(clientConnectionHandler, configurator);
+    /*visible for testing*/ ConnectionPool<HttpClientResponse<O>, HttpClientRequest<I>> getConnectionPool() {
+        return pool;
     }
 
     private void enrichRequest(HttpClientRequest<I> request, ClientConfig config) {
@@ -211,12 +160,22 @@ public class HttpClientImpl<I, O> extends RxClientImpl<HttpClientRequest<I>, Htt
                 converter.setRequestProcessingObserver(requestProcessingObserver);
             }
             connection.getInput().subscribe(requestProcessingObserver);
-            connection.writeAndFlush(request).doOnError(new Action1<Throwable>() {
+            connection.writeAndFlush(request).subscribe(new Observer<Void>() {
                 @Override
-                public void call(Throwable throwable) {
+                public void onCompleted() {
+                    // Completion and onNext are managed by the observer itself.
+                }
+
+                @Override
+                public void onError(Throwable throwable) {
                     // If the write fails, the response should get the error. Completion & onNext are managed by
                     // the response observable itself.
                     requestProcessingObserver.onError(throwable);
+                }
+
+                @Override
+                public void onNext(Void aVoid) {
+                    // Completion and onNext are managed by the observer itself.
                 }
             });
         }
